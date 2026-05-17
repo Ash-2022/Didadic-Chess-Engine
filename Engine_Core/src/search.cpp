@@ -65,6 +65,7 @@ void SearchState::clear() {
         killerMoves[i][0] = nullMove();
         killerMoves[i][1] = nullMove();
         previousMoves[i] = nullMove();
+        excludedMoves[i] = nullMove();
         evalStack[i] = 0;
         pvLength[i] = 0;
     }
@@ -318,25 +319,40 @@ int negamax(Position& pos, SearchState& state, int depth, int ply,
     beta = std::min(beta, MATE - ply - 1);
     if (alpha >= beta) return alpha;
 
+    // Excluded move marker (set non-null by singular-extension caller).
+    // When excluding a move, this node is a verification search of a
+    // sibling negamax that's evaluating whether `excluded` is singular.
+    // We:
+    //   - Skip TT probe (it would return our parent's TT entry, which
+    //     is exactly what we're verifying -- circular)
+    //   - Skip TT store at the end (verification results aren't a
+    //     proper search of this position, just a probe of "what's the
+    //     best move OTHER than the excluded one")
+    //   - Skip null move pruning (could mask the true singular signal)
+    const Move excludedMove = state.excludedMoves[ply];
+    const bool isExcludedSearch = !excludedMove.isNull();
+
     // TT probe with cache layer
     int16_t ttScore;
     Move ttMove = nullMove();
     int8_t ttDepth;
     uint8_t ttFlag;
     bool ttHit = false;
-    
+
     TTCacheEntry cacheEntry;
-    if (state.ttCache.probe(pos.zobristKey, cacheEntry)) {
-        ttHit = true;
-        ttScore = cacheEntry.score;
-        ttMove = cacheEntry.move;
-        ttDepth = cacheEntry.depth;
-        ttFlag = cacheEntry.flag;
-    } else {
-        ttHit = globalTT->probe(pos.zobristKey, ttScore, ttMove, ttDepth, ttFlag, ply);
-        if (ttHit) {
-            cacheEntry = TTCacheEntry(pos.zobristKey, ttScore, ttMove, ttDepth, ttFlag);
-            state.ttCache.store(cacheEntry);
+    if (!isExcludedSearch) {
+        if (state.ttCache.probe(pos.zobristKey, cacheEntry)) {
+            ttHit = true;
+            ttScore = cacheEntry.score;
+            ttMove = cacheEntry.move;
+            ttDepth = cacheEntry.depth;
+            ttFlag = cacheEntry.flag;
+        } else {
+            ttHit = globalTT->probe(pos.zobristKey, ttScore, ttMove, ttDepth, ttFlag, ply);
+            if (ttHit) {
+                cacheEntry = TTCacheEntry(pos.zobristKey, ttScore, ttMove, ttDepth, ttFlag);
+                state.ttCache.store(cacheEntry);
+            }
         }
     }
 
@@ -352,7 +368,29 @@ int negamax(Position& pos, SearchState& state, int depth, int ply,
     if (depth <= 0) return quiescence(pos, state, ply, alpha, beta);
 
     bool inCheck = pos.isKingInCheck(pos.sideToMove);
-    int staticEval = inCheck ? -MATE + ply : evaluate(pos);
+    int rawStaticEval = inCheck ? -MATE + ply : evaluate(pos);
+
+    // ============================================================
+    // CORRECTION HISTORY: adjust raw static eval based on patterns
+    // learned during this search. See history.h for the theory and
+    // citations. Skip when in check (rawStaticEval is a mate score
+    // placeholder, not a real eval).
+    // ============================================================
+    int staticEval = rawStaticEval;
+    Piece prevPiece = NO_PIECE;
+    Square prevTo = NO_SQUARE;
+    if (ply > 0) {
+        Move prev = state.previousMoves[ply - 1];
+        if (!prev.isNull()) {
+            // pieceAt(prev.to) returns the piece NOW at the destination
+            // of the previous move -- which is the piece that just moved.
+            prevPiece = pos.pieceAt(prev.to);
+            prevTo = prev.to;
+        }
+    }
+    if (!inCheck) {
+        staticEval = state.history->applyCorrection(rawStaticEval, pos, prevPiece, prevTo);
+    }
 
     bool improving = false;
     if (!inCheck && ply >= 2) {
@@ -380,7 +418,9 @@ int negamax(Position& pos, SearchState& state, int depth, int ply,
     }
 
     // Null move pruning - OPTIMIZED
-    if (allowNull && !pvNode && !inCheck && depth >= 2 &&
+    // Skipped in excluded-move (singular verification) searches: a null
+    // move could appear to refute the excluded-move hypothesis spuriously.
+    if (allowNull && !pvNode && !inCheck && !isExcludedSearch && depth >= 2 &&
         hasNonPawnMaterial(pos, pos.sideToMove) && staticEval >= beta) {
         
         // OPTIMIZED: R = 3 + depth/5
@@ -506,9 +546,83 @@ int negamax(Position& pos, SearchState& state, int depth, int ply,
         }
 
         const Move& m = moves[idx];
+
+        // Skip the excluded move (used during singular-extension
+        // verification: we're proving "the TT move is the only good one
+        // among all OTHER moves").
+        if (!excludedMove.isNull() && m == excludedMove) {
+            continue;
+        }
+
+        // ============================================================
+        // SINGULAR EXTENSION + MULTICUT
+        // -----------------------------------------------------------
+        // Anantharaman et al., "Singular Extensions: Adding Selectivity
+        // to Brute-Force Searching," Artificial Intelligence, vol. 43,
+        // no. 1, 1990, pp. 99-109. doi:10.1016/0004-3702(90)90075-B
+        //
+        // Hypothesis: if the TT move T at this position has a TT score
+        // that significantly exceeds all other moves' scores at reduced
+        // depth, then T is "singular" and we extend it +1 ply.
+        //
+        // Verification protocol: run a null-window search at this same
+        // position with T excluded, depth reduced, window centred just
+        // below the TT score. If all other moves fail low, T is singular.
+        // If any other move reaches our beta during verification, we can
+        // *multicut*: T was not actually singular and ANOTHER move
+        // already beats beta, so we return beta immediately.
+        //
+        // Modern guards (Stockfish 2010+ formulation):
+        //   - Only at non-root, non-PV-considered nodes, depth >= 8
+        //   - TT move present, TT depth >= depth - 3
+        //   - TT bound is lower or exact (NOT pure upper bound)
+        //   - TT score is not a mate score (avoid spurious mate signals)
+        //   - Not already in a verification search (no recursive SE)
+        //   - Move is the TT move (singular check targets THE move)
+        //
+        // References for the modern multicut tightening:
+        //   Stockfish "More multicut for non-PV nodes," 2014.
+        //   Stockfish "Tighter singular extension margin," 2020.
+        // ============================================================
+        int extension = 0;
+        if (!rootNode
+            && !isExcludedSearch                // no recursive SE
+            && depth >= 8
+            && m == ttMove
+            && ttHit
+            && ttDepth >= depth - 3
+            && ttFlag != TT_ALPHA               // lower-bound or exact
+            && std::abs(ttScore) < MATE - 1000)
+        {
+            int singularBeta = ttScore - 2 * depth;
+            int seDepth = (depth - 1) / 2;
+
+            // Run verification search at THIS position with m excluded.
+            state.excludedMoves[ply] = m;
+            int seScore = negamax(pos, state,
+                                  seDepth, ply,
+                                  singularBeta - 1, singularBeta,
+                                  /*allowNull=*/false);
+            state.excludedMoves[ply] = nullMove();
+
+            if (g_stopSearch.load(std::memory_order_relaxed)) break;
+
+            if (seScore < singularBeta) {
+                // No other move can match T's score even at reduced
+                // depth -- T is singular. Extend it.
+                extension = 1;
+            } else if (singularBeta >= beta) {
+                // MULTICUT: the verification search found some OTHER
+                // move that already reaches our beta at reduced depth.
+                // We have a refutation faster than expected, so we can
+                // cutoff right here without searching anything else.
+                return singularBeta;
+            }
+        }
+
         Undo undo;
         Color us = pos.sideToMove;
-        
+
         pos.makeMove(m, undo);
 
         if (pos.isKingInCheck(us)) {
@@ -558,8 +672,9 @@ int negamax(Position& pos, SearchState& state, int depth, int ply,
             }
         }
 
-        int extension = 0;
-        if (givesCheck && depth < 20) extension = 1;
+        // Check extension (existing). Combines with singular extension
+        // computed above. Cap at +1 total to avoid runaway depth.
+        if (givesCheck && depth < 20 && extension == 0) extension = 1;
 
         state.previousMoves[ply] = m;
 
@@ -649,8 +764,46 @@ int negamax(Position& pos, SearchState& state, int depth, int ply,
     uint8_t flag = TT_ALPHA;
     if (bestScore >= beta) flag = TT_BETA;
     else if (bestScore > alphaOrig) flag = TT_EXACT;
-    
-    globalTT->store(pos.zobristKey, bestScore, bestMove, depth, flag, ply);
+
+    // ============================================================
+    // CORRECTION HISTORY UPDATE
+    // -----------------------------------------------------------
+    // Update conditions (Disservin's original 2024 formulation):
+    //   - Not in check (raw eval was a placeholder mate score)
+    //   - bestMove is not a tactical (captures/promotions don't
+    //     reveal positional eval bias)
+    //   - bound direction is consistent with diff direction:
+    //       * TT_ALPHA (fail-low): only update if bestScore <= eval
+    //       * TT_BETA  (fail-high): only update if bestScore >= eval
+    //       * TT_EXACT: always update
+    //     This filters out updates where the bound doesn't actually
+    //     tell us that eval was biased in the diff's direction.
+    //   - Avoid mate scores (would push correction to extremes)
+    // ============================================================
+    if (!inCheck
+        && !bestMove.isNull()
+        && !(bestMove.flags & CAPTURE)
+        && !(bestMove.flags & PROMOTION)
+        && std::abs(bestScore) < 20000
+        && std::abs(rawStaticEval) < 20000)
+    {
+        int diff = bestScore - rawStaticEval;
+        bool consistent =
+            (flag == TT_EXACT) ||
+            (flag == TT_ALPHA && bestScore < rawStaticEval) ||
+            (flag == TT_BETA  && bestScore > rawStaticEval);
+        if (consistent) {
+            state.history->updateCorrection(pos, prevPiece, prevTo, diff, depth);
+        }
+    }
+
+    // Skip TT store in singular-verification searches: the result of
+    // a search-with-excluded-move is not a true search of this position
+    // (it's a probe of "best non-excluded move"). Storing it would
+    // pollute the TT entry that the outer search relies on.
+    if (!isExcludedSearch) {
+        globalTT->store(pos.zobristKey, bestScore, bestMove, depth, flag, ply);
+    }
 
     return bestScore;
 }

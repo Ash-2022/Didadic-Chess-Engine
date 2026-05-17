@@ -54,13 +54,19 @@ struct SearchState {
     int evalStack[MAX_PLY];
     uint64_t nodesSearched = 0;
     int threadID = 0;
-    
+
     // PV tracking for full variation output
     Move pvTable[MAX_PLY][MAX_PLY];
     int pvLength[MAX_PLY];
-    
+
     // Thread-local TT cache
     ThreadLocalTTCache ttCache;
+
+    // Singular extension support: per-ply "excluded" move. When the
+    // search at ply N is running a singular-verification search, the
+    // candidate singular move is stored here and skipped from the move
+    // loop at ply N. Outside of verification, this is nullMove().
+    Move excludedMoves[MAX_PLY];
 
     SearchState();
     ~SearchState();
