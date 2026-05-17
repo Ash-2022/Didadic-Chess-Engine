@@ -1,0 +1,10 @@
+/build/
+/install/
+.cache/
+.vscode/
+prof-report/
+profraw/
+*.profraw 
+*.profdata
+/.cache/
+*.dll

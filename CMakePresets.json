@@ -1,0 +1,238 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "clang-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_COLOR_DIAGNOSTICS": "ON"
+      }
+    },
+    {
+      "name": "clang-debug",
+      "inherits": "clang-base",
+      "displayName": "Clang Debug",
+      "description": "Debug build with symbols and no optimization",
+      "binaryDir": "build/clang-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ENABLE_MAGIC_BITBOARDS": "ON",
+        "ENABLE_INCREMENTAL_EVAL": "ON",
+        "ENABLE_THREADING": "OFF",
+        "ENABLE_LTO": "OFF",
+        "CMAKE_CXX_FLAGS_DEBUG": "-O0 -g -fno-omit-frame-pointer -fstandalone-debug"
+      }
+    },
+    {
+      "name": "clang-release",
+      "inherits": "clang-base",
+      "displayName": "Clang Release (Standard)",
+      "description": "Standard optimized release build",
+      "binaryDir": "build/clang-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ENABLE_MAGIC_BITBOARDS": "ON",
+        "ENABLE_INCREMENTAL_EVAL": "ON",
+        "ENABLE_AVX2": "ON",
+        "ENABLE_THREADING": "ON",
+        "ENABLE_LTO": "ON",
+        "NUM_THREADS": "8",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -march=native -mtune=native -DNDEBUG",
+        "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-flto=thin -fuse-ld=lld"
+      }
+    },
+    {
+      "name": "clang-release-max",
+      "inherits": "clang-base",
+      "displayName": "Clang Release (Maximum Performance)",
+      "description": "Maximum optimization for competition/benchmarking",
+      "binaryDir": "build/clang-release-max",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ENABLE_MAGIC_BITBOARDS": "ON",
+        "ENABLE_INCREMENTAL_EVAL": "ON",
+        "ENABLE_AVX2": "ON",
+        "ENABLE_BMI2": "ON",
+        "ENABLE_PREFETCH": "ON",
+        "ENABLE_THREADING": "ON",
+        "ENABLE_LTO": "ON",
+        "NUM_THREADS": "16",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -march=native -mtune=native -DNDEBUG -ffast-math -funroll-loops -fvectorize -fslp-vectorize -fomit-frame-pointer -fno-exceptions -fno-rtti",
+        "CMAKE_EXE_LINKER_FLAGS_RELEASE": "-flto=thin -fuse-ld=lld"
+      }
+    },
+    {
+      "name": "clang-release-profile",
+      "inherits": "clang-base",
+      "displayName": "Clang Release (Profiling)",
+      "description": "Optimized build with profiling support",
+      "binaryDir": "build/clang-release-profile",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "ENABLE_MAGIC_BITBOARDS": "ON",
+        "ENABLE_INCREMENTAL_EVAL": "ON",
+        "ENABLE_AVX2": "ON",
+        "ENABLE_THREADING": "ON",
+        "ENABLE_PROFILING": "ON",
+        "ENABLE_LTO": "OFF",
+        "NUM_THREADS": "8",
+        "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O2 -g -DNDEBUG -fno-omit-frame-pointer -fprofile-instr-generate -fcoverage-mapping",
+        "CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO": "-fuse-ld=lld -fprofile-instr-generate"
+      }
+    },
+    {
+      "name": "clang-release-gprof",
+      "inherits": "clang-base",
+      "displayName": "Clang Release (gprof)",
+      "description": "Optimized build with gprof profiling",
+      "binaryDir": "build/clang-release-gprof",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "ENABLE_MAGIC_BITBOARDS": "ON",
+        "ENABLE_INCREMENTAL_EVAL": "ON",
+        "ENABLE_AVX2": "ON",
+        "ENABLE_THREADING": "ON",
+        "ENABLE_GPROF": "ON",
+        "ENABLE_LTO": "OFF",
+        "NUM_THREADS": "8",
+        "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O2 -g -pg -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO": "-pg"
+      }
+    },
+    {
+      "name": "clang-asan",
+      "inherits": "clang-base",
+      "displayName": "Clang with AddressSanitizer",
+      "description": "ASAN build - uses RelWithDebInfo to avoid MSVC debug CRT allocator conflicts",
+      "binaryDir": "build/clang-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "ENABLE_MAGIC_BITBOARDS": "ON",
+        "ENABLE_INCREMENTAL_EVAL": "ON",
+        "ENABLE_THREADING": "OFF",
+        "ENABLE_LTO": "OFF",
+        "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O1 -g -fsanitize=address -fno-omit-frame-pointer -fno-optimize-sibling-calls",
+        "CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO": "-fsanitize=address",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded"
+      }
+    },
+    {
+      "name": "clang-tsan",
+      "inherits": "clang-base",
+      "displayName": "Clang with ThreadSanitizer",
+      "description": "Debug build with ThreadSanitizer for race condition detection",
+      "binaryDir": "build/clang-tsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "ENABLE_MAGIC_BITBOARDS": "ON",
+        "ENABLE_INCREMENTAL_EVAL": "ON",
+        "ENABLE_THREADING": "ON",
+        "NUM_THREADS": "4",
+        "ENABLE_LTO": "OFF",
+        "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O1 -g -fsanitize=thread -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO": "-fsanitize=thread",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded"
+      }
+    },
+    {
+      "name": "clang-no-magics",
+      "inherits": "clang-base",
+      "displayName": "Clang Release (No Magic Bitboards)",
+      "description": "Baseline build without magic bitboards for comparison",
+      "binaryDir": "build/clang-no-magics",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ENABLE_MAGIC_BITBOARDS": "OFF",
+        "ENABLE_INCREMENTAL_EVAL": "OFF",
+        "ENABLE_AVX2": "ON",
+        "ENABLE_THREADING": "ON",
+        "NUM_THREADS": "8",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -march=native -mtune=native -DNDEBUG"
+      }
+    },
+    {
+      "name": "clang-test-magics-seed",
+      "inherits": "clang-base",
+      "displayName": "Clang Release (Test Magic Seeds)",
+      "description": "Build for testing different magic number seeds",
+      "binaryDir": "build/clang-test-magics",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ENABLE_MAGIC_BITBOARDS": "ON",
+        "ENABLE_INCREMENTAL_EVAL": "ON",
+        "PRINT_MAGICS": "ON",
+        "ENABLE_THREADING": "OFF",
+        "CMAKE_CXX_FLAGS_RELEASE": "-O3 -march=native -mtune=native -DNDEBUG"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "clang-debug",
+      "configurePreset": "clang-debug",
+      "displayName": "Build Debug"
+    },
+    {
+      "name": "clang-release",
+      "configurePreset": "clang-release",
+      "displayName": "Build Release (Standard)"
+    },
+    {
+      "name": "clang-release-max",
+      "configurePreset": "clang-release-max",
+      "displayName": "Build Release (Max Performance)",
+      "configuration": "Release"
+    },
+    {
+      "name": "clang-release-profile",
+      "configurePreset": "clang-release-profile",
+      "displayName": "Build Release (Profiling)"
+    },
+    {
+      "name": "clang-release-gprof",
+      "configurePreset": "clang-release-gprof",
+      "displayName": "Build Release (gprof)"
+    },
+    {
+      "name": "clang-asan",
+      "configurePreset": "clang-asan",
+      "displayName": "Build with ASAN"
+    },
+    {
+      "name": "clang-tsan",
+      "configurePreset": "clang-tsan",
+      "displayName": "Build with TSAN"
+    },
+    {
+      "name": "clang-no-magics",
+      "configurePreset": "clang-no-magics",
+      "displayName": "Build Baseline (No Magics)"
+    },
+    {
+      "name": "clang-test-magics-seed",
+      "configurePreset": "clang-test-magics-seed",
+      "displayName": "Build Magic Seed Test"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "clang-debug",
+      "configurePreset": "clang-debug",
+      "output": {"outputOnFailure": true}
+    },
+    {
+      "name": "clang-release",
+      "configurePreset": "clang-release",
+      "output": {"outputOnFailure": true}
+    }
+  ]
+}
