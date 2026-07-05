@@ -582,6 +582,13 @@ int evaluateThreats(const Position& pos, Color side) {
    ========================= */
 
 int evaluate(const Position& pos) {
+    // NNUE path: accumulator is maintained incrementally by make/undo and
+    // refreshed at every search root. Falls through to the hand-crafted
+    // eval when no network is loaded (or NNUE is disabled via UCI).
+    if (NNUE::active()) {
+        return NNUE::evaluate(pos);
+    }
+
     // Material + PST (already tracked incrementally)
     int mgScore = pos.mgMaterial[WHITE] - pos.mgMaterial[BLACK];
     int egScore = pos.egMaterial[WHITE] - pos.egMaterial[BLACK];

@@ -16,6 +16,11 @@ constexpr int MATE = 29000;
 extern std::atomic<bool> g_timeUp;
 extern std::atomic<bool> g_stopSearch;
 extern std::atomic<Move> g_bestMove;
+// Root score (side-to-move POV) of the last completed iteration; used by
+// datagen to label positions.
+extern std::atomic<int> g_lastRootScore;
+// Suppress per-iteration "info ..." output (datagen).
+extern bool g_silentSearch;
 extern std::chrono::steady_clock::time_point g_searchStartTime;
 extern int g_allocatedTime;
 

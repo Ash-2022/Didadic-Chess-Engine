@@ -2,6 +2,8 @@
 #include "search.h"
 #include "thread_pool.h"
 #include "tt_atomic.h"
+#include "nnue.h"
+#include "evaluation.h"
 
 namespace UCI {
 
@@ -71,6 +73,8 @@ namespace UCI {
                 std::cout << "id author Ashvin" << std::endl;
                 std::cout << "option name Hash type spin default 512 min 1 max 65536" << std::endl;
                 std::cout << "option name Threads type spin default 8 min 1 max 256" << std::endl;
+                std::cout << "option name UseNNUE type check default true" << std::endl;
+                std::cout << "option name NNUEPath type string default nnue_weights.bin" << std::endl;
                 std::cout << "uciok" << std::endl;
             }
             else if (token == "setoption") {
@@ -86,6 +90,21 @@ namespace UCI {
                 } else if (name == "Threads") {
                     int threads = std::stoi(value);
                     if (globalThreadPool) globalThreadPool->setNumThreads(threads);
+                } else if (name == "UseNNUE") {
+                    NNUE::g_enabled = (value == "true" || value == "1");
+                    std::cout << "info string NNUE "
+                              << (NNUE::active() ? "enabled" : "disabled")
+                              << std::endl;
+                } else if (name == "NNUEPath") {
+                    // Value may contain spaces: append the rest of the line
+                    std::string rest;
+                    std::getline(iss, rest);
+                    value += rest;
+                    if (NNUE::loadNetwork(value)) {
+                        std::cout << "info string NNUE loaded " << value << std::endl;
+                    } else {
+                        std::cout << "info string NNUE failed to load " << value << std::endl;
+                    }
                 }
             }
             else if (token == "isready") {
@@ -188,6 +207,12 @@ namespace UCI {
             }
             else if (token == "d") {
                 pos.printBoard();
+            }
+            else if (token == "eval") {
+                if (NNUE::active()) NNUE::refresh(pos);
+                std::cout << "eval " << evaluate(pos)
+                          << " (" << (NNUE::active() ? "NNUE" : "HCE")
+                          << ", stm POV)" << std::endl;
             }
         }
     }

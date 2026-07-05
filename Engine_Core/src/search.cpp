@@ -12,6 +12,8 @@
 /* Time management globals */
 std::atomic<bool> g_timeUp{false};
 std::atomic<Move> g_bestMove{nullMove()};
+std::atomic<int> g_lastRootScore{0};
+bool g_silentSearch = false;
 std::chrono::steady_clock::time_point g_searchStartTime;
 int g_allocatedTime = 0;
 
@@ -811,6 +813,12 @@ int negamax(Position& pos, SearchState& state, int depth, int ply,
 /* Iterative deepening with ASPIRATION WINDOWS */
 Move iterativeDeepeningST(Position& pos, int maxDepth, SearchState& state) {
     Position root = pos;
+    // Guarantee a fresh NNUE accumulator at the search root; incremental
+    // updates keep it in sync from here on.
+    if (NNUE::active()) {
+        NNUE::refresh(root);
+        NNUE::refresh(pos);
+    }
     Move lastCompletedBest = nullMove();
     int prevScore = 0;
 
@@ -878,10 +886,13 @@ Move iterativeDeepeningST(Position& pos, int maxDepth, SearchState& state) {
             lastCompletedBest = ttMove;
             prevScore = score;
             g_bestMove.store(ttMove, std::memory_order_relaxed);
+            g_lastRootScore.store(score, std::memory_order_relaxed);
         }
         
+        if (g_silentSearch) continue;
+
         int whiteScore = (root.sideToMove == WHITE) ? prevScore : -prevScore;
-        
+
         std::cout << "info depth " << depth
                   << " score cp " << whiteScore
                   << " nodes " << state.nodesSearched
