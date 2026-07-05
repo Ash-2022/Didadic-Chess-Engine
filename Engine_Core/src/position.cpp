@@ -26,6 +26,7 @@ void Position::clear() {
     zobristKey = 0;
     gamePhase = 0;
     posHistoryCount = 0;
+    NNUE::resetAccumulator(acc);
 }
 
 void Position::rebuildMailbox() {
@@ -582,6 +583,7 @@ void Position::makeMove(const Move& move, Undo& undo) {
         }
     }
     validatePosition();
+    assert(NNUE::verifyAccumulator(*this) && "NNUE accumulator desync after makeMove");
 #endif
 }
 
@@ -786,6 +788,7 @@ void Position::undoMove(const Move& move, const Undo& undo) {
         }
     }
     validatePosition();
+    assert(NNUE::verifyAccumulator(*this) && "NNUE accumulator desync after undoMove");
 #endif
 }
 

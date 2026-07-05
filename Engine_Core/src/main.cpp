@@ -11,6 +11,8 @@
 #include "uci.h"
 #include "magics.h"
 #include "evaluation.h"
+#include "nnue.h"
+#include "datagen.h"
 
 struct EngineOptions {
     int ttSizeMB = 1024;
@@ -19,7 +21,15 @@ struct EngineOptions {
     bool useThreading = true;
     bool runBenchmark = false;
     bool runTests = false;
+    bool runEvalBench = false;
+    bool runDatagenMode = false;
     bool uciMode = true;
+    bool useNNUE = true;
+    std::string nnuePath = "nnue_weights.bin";
+    std::string dgOut = "datagen.txt";
+    int dgGames = 1000;
+    int dgDepth = 5;
+    unsigned dgSeed = 1;
 };
 
 void printUsage(const char* progName) {
@@ -29,9 +39,12 @@ void printUsage(const char* progName) {
               << "  --uci              Enter UCI mode (default)\n"
               << "  --bench            Run benchmark test\n"
               << "  --test             Run tactical tests\n"
+              << "  --evalbench        Measure evaluation speed (ns/eval)\n"
               << "  --depth N          Set benchmark depth (default: 15)\n"
               << "  --threads N        Number of threads (default: 8)\n"
               << "  --hash N           Hash table size in MB (default: 512)\n"
+              << "  --nnue PATH        NNUE weights file (default: nnue_weights.bin)\n"
+              << "  --nonnue           Disable NNUE, use hand-crafted eval\n"
               << "  --help             Show this help\n";
 }
 
@@ -45,6 +58,14 @@ EngineOptions parseCommandLine(int argc, char* argv[]) {
         else if (arg == "--uci") { opts.uciMode = true; opts.runBenchmark = false; opts.runTests = false; }
         else if (arg == "--bench") { opts.runBenchmark = true; opts.uciMode = false; }
         else if (arg == "--test") { opts.runTests = true; opts.uciMode = false; }
+        else if (arg == "--evalbench") { opts.runEvalBench = true; opts.uciMode = false; }
+        else if (arg == "--nnue" && i+1 < argc) opts.nnuePath = argv[++i];
+        else if (arg == "--nonnue") opts.useNNUE = false;
+        else if (arg == "--datagen") { opts.runDatagenMode = true; opts.uciMode = false; }
+        else if (arg == "--dgout" && i+1 < argc) opts.dgOut = argv[++i];
+        else if (arg == "--dggames" && i+1 < argc) opts.dgGames = std::stoi(argv[++i]);
+        else if (arg == "--dgdepth" && i+1 < argc) opts.dgDepth = std::stoi(argv[++i]);
+        else if (arg == "--dgseed" && i+1 < argc) opts.dgSeed = (unsigned)std::stoul(argv[++i]);
         else if (arg == "--depth" && i+1 < argc) opts.benchDepth = std::stoi(argv[++i]);
         else if (arg == "--threads" && i+1 < argc) { opts.numThreads = std::stoi(argv[++i]); opts.useThreading = (opts.numThreads > 1); }
         else if (arg == "--hash" && i+1 < argc) opts.ttSizeMB = std::stoi(argv[++i]);
@@ -80,6 +101,39 @@ void runBenchmark(const EngineOptions& opts) {
         std::cout << "Total nodes: " << totalNodes << std::endl;
         std::cout << "NPS: " << nps << std::endl;
     }
+}
+
+void runEvalBench() {
+    std::cout << "=== Evaluation Speed Benchmark ===" << std::endl;
+    std::cout << "Eval: " << (NNUE::active() ? "NNUE" : "hand-crafted") << std::endl;
+
+    const char* fens[] = {
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r1bqkbnr/pppppppp/2n5/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 1 2",
+        "r2q1rk1/pp2ppbp/2np1np1/8/3NP3/2N1BP2/PPPQ2PP/R3KB1R w KQ - 0 9",
+        "8/2k5/3p4/p2P1p2/P2P1P2/8/8/4K3 w - - 0 1",
+        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10"
+    };
+    constexpr int NUM_FENS = 5;
+    constexpr int ITERS = 200000;
+
+    Position positions[NUM_FENS];
+    for (int i = 0; i < NUM_FENS; i++) positions[i].setFromFEN(fens[i]);
+    if (NNUE::active())
+        for (int i = 0; i < NUM_FENS; i++) NNUE::refresh(positions[i]);
+
+    volatile long long sink = 0;
+    auto start = std::chrono::high_resolution_clock::now();
+    for (int it = 0; it < ITERS; it++)
+        for (int i = 0; i < NUM_FENS; i++)
+            sink += evaluate(positions[i]);
+    auto end = std::chrono::high_resolution_clock::now();
+
+    double ns = std::chrono::duration<double, std::nano>(end - start).count();
+    double perEval = ns / (double)(ITERS * NUM_FENS);
+    std::cout << "Evals: " << (ITERS * NUM_FENS) << std::endl;
+    std::cout << "Time per eval: " << perEval << " ns" << std::endl;
+    std::cout << "(checksum " << sink << ")" << std::endl;
 }
 
 void runTacticalTests() {
@@ -125,6 +179,13 @@ int main(int argc, char* argv[]) {
     initEvaluation();
     initLMR();
 
+    NNUE::g_enabled = opts.useNNUE;
+    if (opts.useNNUE) {
+        NNUE::init(opts.nnuePath, argv[0]);
+    } else {
+        std::cout << "NNUE: disabled (--nonnue), using hand-crafted eval" << std::endl;
+    }
+
     // TT first, then thread pool (thread pool depends on TT)
     std::cout << "TT: " << opts.ttSizeMB << " MB" << std::endl;
     initTTAtomic(opts.ttSizeMB);
@@ -143,6 +204,10 @@ int main(int argc, char* argv[]) {
         runBenchmark(opts);
     } else if (opts.runTests) {
         runTacticalTests();
+    } else if (opts.runEvalBench) {
+        runEvalBench();
+    } else if (opts.runDatagenMode) {
+        runDatagen(opts.dgOut, opts.dgGames, opts.dgDepth, opts.dgSeed);
     } else if (opts.uciMode) {
         UCI::loop();
     }

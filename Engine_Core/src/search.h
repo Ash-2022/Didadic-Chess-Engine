@@ -16,6 +16,11 @@ constexpr int MATE = 29000;
 extern std::atomic<bool> g_timeUp;
 extern std::atomic<bool> g_stopSearch;
 extern std::atomic<Move> g_bestMove;
+// Root score (side-to-move POV) of the last completed iteration; used by
+// datagen to label positions.
+extern std::atomic<int> g_lastRootScore;
+// Suppress per-iteration "info ..." output (datagen).
+extern bool g_silentSearch;
 extern std::chrono::steady_clock::time_point g_searchStartTime;
 extern int g_allocatedTime;
 
@@ -54,13 +59,19 @@ struct SearchState {
     int evalStack[MAX_PLY];
     uint64_t nodesSearched = 0;
     int threadID = 0;
-    
+
     // PV tracking for full variation output
     Move pvTable[MAX_PLY][MAX_PLY];
     int pvLength[MAX_PLY];
-    
+
     // Thread-local TT cache
     ThreadLocalTTCache ttCache;
+
+    // Singular extension support: per-ply "excluded" move. When the
+    // search at ply N is running a singular-verification search, the
+    // candidate singular move is stored here and skipped from the move
+    // loop at ply N. Outside of verification, this is nullMove().
+    Move excludedMoves[MAX_PLY];
 
     SearchState();
     ~SearchState();

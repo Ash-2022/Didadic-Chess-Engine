@@ -5,6 +5,7 @@
 #include "attacks.h"
 #include "zobrist.h"
 #include "pst_tables.h"
+#include "nnue.h"
 #include <cassert>
 #include <cstring>
 #include <algorithm>
@@ -39,6 +40,10 @@ struct Position {
     int mgPST[2] = {};
     int egPST[2] = {};
     int gamePhase = 0;
+
+    // NNUE accumulator (both perspectives), maintained incrementally via
+    // addPieceEval/removePieceEval and rebuilt at every search root.
+    NNUE::Accumulator acc;
 
     // Core methods
     void clear();
@@ -94,6 +99,7 @@ struct Position {
         egMaterial[c] += PIECE_VALUE_EG[p];
         mgPST[c] += getPSTValue(p, sq, c, false);
         egPST[c] += getPSTValue(p, sq, c, true);
+        if (NNUE::active()) NNUE::addPiece(acc, c, p, sq);
     }
 
     inline void removePieceEval(Color c, Piece p, Square sq) {
@@ -101,6 +107,7 @@ struct Position {
         egMaterial[c] -= PIECE_VALUE_EG[p];
         mgPST[c] -= getPSTValue(p, sq, c, false);
         egPST[c] -= getPSTValue(p, sq, c, true);
+        if (NNUE::active()) NNUE::removePiece(acc, c, p, sq);
     }
 
     inline bool isKingInCheck(Color side) const {
@@ -144,7 +151,8 @@ struct Position {
         std::memcpy(mgPST, other.mgPST, sizeof(mgPST));
         std::memcpy(egPST, other.egPST, sizeof(egPST));
         gamePhase = other.gamePhase;
-        
+        std::memcpy(&acc, &other.acc, sizeof(acc));
+
         // State
         sideToMove = other.sideToMove;
         castlingRights = other.castlingRights;
@@ -173,6 +181,7 @@ struct Position {
             std::memcpy(mgPST, other.mgPST, sizeof(mgPST));
             std::memcpy(egPST, other.egPST, sizeof(egPST));
             gamePhase = other.gamePhase;
+            std::memcpy(&acc, &other.acc, sizeof(acc));
             sideToMove = other.sideToMove;
             castlingRights = other.castlingRights;
             enPassantSquare = other.enPassantSquare;

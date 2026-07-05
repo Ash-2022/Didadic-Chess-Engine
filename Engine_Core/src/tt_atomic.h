@@ -4,6 +4,7 @@
 
 #include "types.h"
 #include <atomic>
+#include <climits>
 #include <cstring>
 #include <memory>
 #include <algorithm>
@@ -120,17 +121,51 @@ struct alignas(16) TTEntryAtomic {
     }
 };
 
+/* =========================
+   4-WAY BUCKETED LOCK-FREE TT
+   -----------------------------------------------------------
+   Each bucket holds 4 TTEntryAtomic entries (4 * 16 B = 64 B,
+   one x86-64 cache line). Probing iterates all 4 in a single
+   cache-line load. Store picks a victim by a 3-tier policy:
+
+     1. Exact key match (refresh-in-place at same depth or deeper)
+     2. Empty / stale-generation slot
+     3. Lowest (depth + age_bonus) entry in the bucket
+
+   Compared to a single-entry-per-slot scheme this gives:
+     - ~4x more tolerance to hash collisions (4 candidate slots)
+     - No extra memory bandwidth (same cache line either way)
+     - Significantly higher useful-entry retention for deep PV
+       lines, which is where collision loss hurts most
+
+   References:
+     - Hyatt & Cozzie, "The Effect of Hash Signature Collisions
+       in a Chess Program," ICGA Journal 2005.
+     - Stockfish TT cluster design (cluster of 3 entries since
+       2014; bucket sizes of 4-8 are common in modern engines).
+   ========================= */
+
+struct alignas(64) TTBucket {
+    static constexpr int BUCKET_SIZE = 4;
+    TTEntryAtomic entries[BUCKET_SIZE];
+
+    TTBucket() = default;
+
+    // Non-copyable (contains non-copyable atomic entries)
+    TTBucket(const TTBucket&) = delete;
+    TTBucket& operator=(const TTBucket&) = delete;
+    TTBucket(TTBucket&&) = delete;
+    TTBucket& operator=(TTBucket&&) = delete;
+};
+
 class TranspositionTableAtomic {
 private:
-    // RAII via unique_ptr<T[]> - no copy ctor needed, no vector overhead
-    std::unique_ptr<TTEntryAtomic[]> table_;
-    size_t size_ = 0;
+    std::unique_ptr<TTBucket[]> table_;
+    size_t numBuckets_ = 0;
     uint8_t generation_ = 0;
 
-    // Helper: allocate and zero-init a new table
-    static std::unique_ptr<TTEntryAtomic[]> allocTable(size_t count) {
-        // new T[n]() value-initializes each element (calls default ctor)
-        return std::unique_ptr<TTEntryAtomic[]>(new TTEntryAtomic[count]());
+    static std::unique_ptr<TTBucket[]> allocTable(size_t count) {
+        return std::unique_ptr<TTBucket[]>(new TTBucket[count]());
     }
 
 public:
@@ -138,20 +173,21 @@ public:
         resize(sizeMB);
     }
 
-    // Non-copyable, non-movable
     TranspositionTableAtomic(const TranspositionTableAtomic&) = delete;
     TranspositionTableAtomic& operator=(const TranspositionTableAtomic&) = delete;
     TranspositionTableAtomic(TranspositionTableAtomic&&) = delete;
     TranspositionTableAtomic& operator=(TranspositionTableAtomic&&) = delete;
 
-    // unique_ptr destructor handles deallocation
     ~TranspositionTableAtomic() = default;
 
     void clear() {
-        for (size_t i = 0; i < size_; i++) {
-            table_[i].keyData.store(0, std::memory_order_relaxed);
-            table_[i].scoreMove.store(0, std::memory_order_relaxed);
-            table_[i].generation = 0;
+        for (size_t b = 0; b < numBuckets_; b++) {
+            for (int i = 0; i < TTBucket::BUCKET_SIZE; i++) {
+                TTEntryAtomic& e = table_[b].entries[i];
+                e.keyData.store(0, std::memory_order_relaxed);
+                e.scoreMove.store(0, std::memory_order_relaxed);
+                e.generation = 0;
+            }
         }
         generation_ = 0;
     }
@@ -164,74 +200,106 @@ public:
         }
     }
 
-    TTEntryAtomic& getEntry(uint64_t key) {
-        return table_[key % size_];
+    TTBucket& getBucket(uint64_t key) {
+        return table_[key % numBuckets_];
     }
 
+    // Probe: scan all 4 entries in the bucket. Return the first one
+    // that passes lockless XOR verification against `key`.
     bool probe(uint64_t key, int16_t& score, Move& move, int8_t& depth,
                uint8_t& flag, int ply) {
-        TTEntryAtomic& entry = getEntry(key);
+        TTBucket& bucket = getBucket(key);
 
-        uint8_t stored_gen;
-        // readVerified() rejects torn reads atomically via XOR checksum.
-        // After this returns true, score/move/depth/flag are guaranteed
-        // to be a consistent snapshot of one single store.
-        if (!entry.readVerified(key, score, move, depth, flag, stored_gen))
-            return false;
-
-        // Adjust mate scores to be relative to the current ply
-        if (score > 28000) score -= ply;
-        else if (score < -28000) score += ply;
-
-        return true;
+        for (int i = 0; i < TTBucket::BUCKET_SIZE; i++) {
+            uint8_t stored_gen;
+            if (bucket.entries[i].readVerified(key, score, move, depth, flag, stored_gen)) {
+                // Adjust mate scores to be relative to the current ply
+                if (score > 28000) score -= ply;
+                else if (score < -28000) score += ply;
+                return true;
+            }
+        }
+        return false;
     }
 
+    // Store: choose a victim in the bucket by replacement policy.
+    // Priority order:
+    //   1. Same-key slot (refresh)
+    //   2. Empty / stale-generation slot (any depth)
+    //   3. Lowest "value" slot where value = depth - 4 * age_penalty
     void store(uint64_t key, int16_t score, Move move, int8_t depth,
                uint8_t flag, int ply) {
-        TTEntryAtomic& entry = getEntry(key);
+        TTBucket& bucket = getBucket(key);
 
         if (score > 28000) score += ply;
         else if (score < -28000) score -= ply;
 
-        // Replacement policy uses best-effort reads -- a torn read here
-        // only affects which entry we choose to overwrite, not correctness.
-        uint8_t entryGen = entry.getGeneration();
-        int8_t entryDepth = entry.getDepth();
-
-        bool replace = false;
-        if (entryGen != generation_)
-            replace = true;
-        else if (entry.keyMatchesApprox(key))
-            replace = (depth + 2 >= entryDepth);
-        else
-            replace = (depth >= entryDepth);
-
-        if (replace) {
-            entry.pack(key, score, move, depth, flag, generation_);
+        // Phase 1: look for same-key entry to refresh.
+        // Refreshing the same key keeps the deepest known result for
+        // this position regardless of which slot it landed in.
+        for (int i = 0; i < TTBucket::BUCKET_SIZE; i++) {
+            TTEntryAtomic& e = bucket.entries[i];
+            if (e.keyMatchesApprox(key)) {
+                // Same position. Replace only if new is at least as
+                // useful (depth + 2 fudge factor accounts for the new
+                // entry having fresh info even if same nominal depth).
+                if (depth + 2 >= e.getDepth()) {
+                    e.pack(key, score, move, depth, flag, generation_);
+                }
+                return;
+            }
         }
+
+        // Phase 2: find best victim.
+        // Score each entry by (depth - age_penalty) and replace the
+        // lowest-scoring one. Stale-generation entries get a large
+        // penalty so they're preferentially evicted.
+        int victimIdx = 0;
+        int victimScore = INT32_MAX;
+        for (int i = 0; i < TTBucket::BUCKET_SIZE; i++) {
+            TTEntryAtomic& e = bucket.entries[i];
+            int entryDepth = e.getDepth();
+            uint8_t entryGen = e.getGeneration();
+
+            // Age penalty in "depth units". A stale entry from an old
+            // generation is worth ~8 fewer depth points than a fresh
+            // entry at the same nominal depth, so it gets evicted first.
+            int agePenalty = (entryGen == generation_) ? 0 : 8;
+            int entryValue = entryDepth - agePenalty;
+
+            if (entryValue < victimScore) {
+                victimScore = entryValue;
+                victimIdx = i;
+            }
+        }
+
+        bucket.entries[victimIdx].pack(key, score, move, depth, flag, generation_);
     }
 
     int hashfull() const {
+        // Sample first 250 buckets * 4 entries = 1000 entries.
         int count = 0;
-        constexpr int sample = 1000;
-        size_t n = std::min(static_cast<size_t>(sample), size_);
-        for (size_t i = 0; i < n; i++) {
-            if (table_[i].getGeneration() == generation_)
-                count++;
+        constexpr int sample_buckets = 250;
+        size_t n = std::min(static_cast<size_t>(sample_buckets), numBuckets_);
+        for (size_t b = 0; b < n; b++) {
+            for (int i = 0; i < TTBucket::BUCKET_SIZE; i++) {
+                if (table_[b].entries[i].getGeneration() == generation_)
+                    count++;
+            }
         }
         return count;
     }
 
     void resize(size_t sizeMB) {
-        size_ = (sizeMB * 1024 * 1024) / sizeof(TTEntryAtomic);
-        if (size_ == 0) size_ = 1;
-        // Release old table, allocate new one (RAII - old one freed automatically)
-        table_ = allocTable(size_);
+        // Each bucket is 64 bytes (one cache line).
+        numBuckets_ = (sizeMB * 1024 * 1024) / sizeof(TTBucket);
+        if (numBuckets_ == 0) numBuckets_ = 1;
+        table_ = allocTable(numBuckets_);
         generation_ = 0;
     }
 
-    size_t getSize() const { return size_; }
-    size_t getSizeMB() const { return (size_ * sizeof(TTEntryAtomic)) / (1024 * 1024); }
+    size_t getSize() const { return numBuckets_ * TTBucket::BUCKET_SIZE; }
+    size_t getSizeMB() const { return (numBuckets_ * sizeof(TTBucket)) / (1024 * 1024); }
 };
 
 // Global TT - RAII via unique_ptr

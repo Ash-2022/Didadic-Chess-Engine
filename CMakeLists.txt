@@ -39,9 +39,11 @@ message(STATUS "LTO: ${ENABLE_LTO}")
 
 set(ENGINE_SOURCES
     Engine_Core/src/attacks.cpp
+    Engine_Core/src/datagen.cpp
     Engine_Core/src/evaluation.cpp
     Engine_Core/src/magics.cpp
     Engine_Core/src/movegen.cpp
+    Engine_Core/src/nnue.cpp
     Engine_Core/src/perft.cpp
     Engine_Core/src/position.cpp
     Engine_Core/src/pst.cpp
@@ -59,6 +61,7 @@ set(ENGINE_HEADERS
     Engine_Core/src/history.h
     Engine_Core/src/magics.h
     Engine_Core/src/movegen.h
+    Engine_Core/src/nnue.h
     Engine_Core/src/perft.h
     Engine_Core/src/position.h
     Engine_Core/src/pst.h
