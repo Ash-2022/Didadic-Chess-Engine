@@ -1,0 +1,26 @@
+{
+  "movetime_ms": 150,
+  "games_per_opponent": 40,
+  "opponents": [
+    {
+      "name": "Stockfish UCI_Elo 2300",
+      "path": "C:\\Users\\ashvi\\OneDrive\\Desktop\\Chess_Engine\\Stockfish\\src\\stockfish.exe",
+      "rating": 2300,
+      "options": { "UCI_LimitStrength": true, "UCI_Elo": 2300, "Hash": 64 }
+    },
+    {
+      "name": "Obsidian 150 nodes",
+      "path": "C:\\Users\\ashvi\\OneDrive\\Desktop\\Chess_Engine\\Obsidian\\Obsidian.exe",
+      "rating": null,
+      "nodes": 150,
+      "options": { "Hash": 64 }
+    },
+    {
+      "name": "LCZero 1 node",
+      "path": "C:\\Users\\ashvi\\OneDrive\\Desktop\\Chess_Engine\\lc0-v0.32.1-windows-gpu-nvidia-cuda12\\lc0.exe",
+      "rating": null,
+      "nodes": 1,
+      "options": {}
+    }
+  ]
+}
